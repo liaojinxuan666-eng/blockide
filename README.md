@@ -2,7 +2,7 @@
 
 一个基于 **Node.js 零依赖** 的积木式编程 IDE。拖积木拼程序，实时生成代码，**代码与积木真正双向同步**，内置解释器可直接运行看结果。
 
-在线访问：https://liaojinxuan666-eng.github.io/blockide/ （若未开启 Pages，见下方本地运行）
+在线访问：https://liaojinxuan666-eng.github.io/blockide/ （已开启 GitHub Pages，打开即用）
 
 ## 运行
 
