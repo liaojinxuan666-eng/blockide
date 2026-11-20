@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>积木 IDE · C / C++ / Swift</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">🧩</div>
+        <div>
+          <h1>积木 IDE</h1>
+          <p>像拼积木一样写 C / C++ / Swift</p>
+        </div>
+      </div>
+      <div class="toolbar">
+        <div class="segmented" id="langSwitch">
+          <button data-lang="c">C</button>
+          <button data-lang="cpp">C++</button>
+          <button data-lang="swift">Swift</button>
+        </div>
+        <button id="runBtn" class="btn primary">▶ 运行</button>
+        <button id="resetBtn" class="btn ghost" title="恢复示例程序">重置</button>
+      </div>
+    </header>
+
+    <div class="hint">
+      <span>① 从左侧拖积木到画布拼装</span>
+      <span>② 拖动已有积木可调整顺序</span>
+      <span>③ 点击积木 / 代码行双向高亮</span>
+      <span>④ 点「运行」看结果</span>
+    </div>
+
+    <main class="layout">
+      <aside class="panel palette-panel">
+        <div class="panel-head"><h2>积木盒</h2><span class="badge">拖入画布</span></div>
+        <div id="categories" class="categories"></div>
+        <div id="palette" class="palette"></div>
+        <div class="panel-foot">点击分类切换积木库</div>
+      </aside>
+
+      <section class="panel canvas-panel">
+        <div class="panel-head"><h2>画布</h2><span class="badge">拖动拼装</span></div>
+        <div id="workspace" class="workspace"></div>
+      </section>
+
+      <section class="panel code-panel">
+        <div class="panel-head">
+          <h2>代码 <span id="codeLang" class="code-lang">Swift</span></h2>
+          <button id="copyBtn" class="btn tiny">复制代码</button>
+        </div>
+        <div id="code" class="code"></div>
+        <div class="console-wrap">
+          <div class="console-head"><span>控制台输出</span><button id="clearBtn">清空</button></div>
+          <div id="console" class="console"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer id="status" class="status"></footer>
+  </div>
+
+  <script src="js/blocks.js"></script>
+  <script src="js/generators.js"></script>
+  <script src="js/engine.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
