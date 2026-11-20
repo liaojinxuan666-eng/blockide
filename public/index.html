@@ -2,90 +2,107 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>积木 IDE · C / C++ / Swift</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BLOCKIDE — terminal edition</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div class="app">
-    <header class="topbar">
-      <div class="brand">
-        <div class="logo">🧩</div>
-        <div>
-          <h1>积木 IDE</h1>
-          <p>像拼积木一样写 C / C++ / Swift</p>
-        </div>
-      </div>
-      <div class="toolbar">
-        <select id="exampleSelect" class="select-ctl" title="切换示例程序"></select>
-        <div class="segmented" id="langSwitch">
-          <button data-lang="c">C</button>
-          <button data-lang="cpp">C++</button>
-          <button data-lang="swift">Swift</button>
-        </div>
-        <button id="undoBtn" class="btn ghost icon-btn" title="撤销 (Ctrl+Z)">↶</button>
-        <button id="redoBtn" class="btn ghost icon-btn" title="重做 (Ctrl+Shift+Z)">↷</button>
-        <button id="runBtn" class="btn primary">▶ 运行</button>
-      </div>
-    </header>
+<div class="crt">
+<div class="term">
 
-    <div class="hint">
-      <span>拖积木到画布拼装</span>
-      <span>拖动已有积木调整顺序</span>
-      <span>点积木 / 代码行双向高亮</span>
-      <span>编辑代码会自动同步回积木</span>
-      <span>Ctrl+Z 撤销</span>
-    </div>
+  <!-- 顶部菜单栏 -->
+  <header class="menubar">
+    <div class="brand">▚ BLOCKIDE<span class="brand-dim"> v0.2.0</span></div>
+    <nav class="menu">
+      <span class="menu-item"><kbd>F1</kbd> 帮助</span>
+      <span class="menu-item"><kbd>F2</kbd> 示例</span>
+      <span class="menu-item"><kbd>F5</kbd> 运行</span>
+    </nav>
+    <div class="menu-right">● connected</div>
+  </header>
 
-    <main class="layout">
-      <aside class="panel palette-panel">
-        <div class="panel-head"><h2>积木盒</h2><span class="badge">拖入画布</span></div>
-        <div class="search-wrap"><input id="blockSearch" class="search-ctl" type="text" placeholder="🔍 搜索积木…"></div>
+  <!-- 命令栏 -->
+  <div class="cmdbar">
+    <span class="prompt">blockide:~$</span>
+    <span id="cmdEcho" class="cmd-echo">载入示例程序… 输入 <kbd>F1</kbd> 查看快捷键</span>
+  </div>
+
+  <!-- 三栏工作区 -->
+  <main class="workspace-grid">
+
+    <!-- 左：积木库 -->
+    <section class="pane" id="panePalette" tabindex="0">
+      <div class="pane-head"><span class="pane-title">┤ BLOCKS ├</span><span class="pane-hint" id="paletteCount">0</span></div>
+      <div class="pane-body">
+        <div class="search-line"><span class="fg-dim">/search:</span> <input id="blockSearch" class="term-input" placeholder="过滤积木…" spellcheck="false"></div>
         <div id="categories" class="categories"></div>
         <div id="palette" class="palette"></div>
-        <div class="panel-foot">点击分类切换积木库</div>
-      </aside>
+      </div>
+      <div class="pane-foot"><kbd>↑↓</kbd> 选择 <kbd>Enter</kbd> 添加</div>
+    </section>
 
-      <section class="panel canvas-panel">
-        <div class="panel-head"><h2>画布</h2><span class="badge">拖动拼装</span></div>
-        <div id="workspace" class="workspace"></div>
-      </section>
+    <!-- 中：画布 -->
+    <section class="pane" id="paneCanvas" tabindex="0">
+      <div class="pane-head"><span class="pane-title">┤ CANVAS ├</span><span class="pane-hint" id="canvasCount">0 blocks</span></div>
+      <div class="pane-body" id="workspace"></div>
+      <div class="pane-foot"><kbd>↑↓</kbd> 导航 <kbd>Enter</kbd> 编辑 <kbd>Del</kbd> 删除 <kbd>Space</kbd> 添加</div>
+    </section>
 
-      <section class="panel code-panel">
-        <div class="panel-head">
-          <h2>代码 <span id="codeLang" class="code-lang">Swift</span></h2>
-          <div class="code-actions">
-            <button id="editToggle" class="btn tiny" title="编辑模式：直接改代码">✎ 编辑</button>
-            <button id="copyBtn" class="btn tiny">复制</button>
-            <button id="exportBtn" class="btn tiny" title="下载源码文件">导出</button>
-            <button id="importBtn" class="btn tiny" title="从源码文件导入">导入</button>
-            <input id="importFile" type="file" accept=".c,.cpp,.swift,.txt" hidden>
-          </div>
+    <!-- 右：代码 + 控制台 -->
+    <section class="pane code-pane" id="paneCode" tabindex="0">
+      <div class="pane-head">
+        <span class="pane-title">┤ SOURCE ├</span>
+        <div class="lang-tabs" id="langSwitch">
+          <button data-lang="c">C</button><button data-lang="cpp">C++</button><button data-lang="swift">SWIFT</button>
         </div>
+      </div>
+      <div class="pane-body code-body">
         <div class="code-scroll">
           <div id="code" class="code"></div>
           <textarea id="codeEditor" class="code-editor" spellcheck="false" hidden></textarea>
         </div>
-        <div id="editHint" class="edit-hint" hidden>编辑后点击「✓ 应用」同步回积木，或按 Esc 取消</div>
-        <div class="code-actions-edit" id="editActions" hidden>
-          <button id="applyEdit" class="btn primary tiny">✓ 应用</button>
-          <button id="cancelEdit" class="btn ghost tiny">取消</button>
-        </div>
-        <div class="console-wrap">
-          <div class="console-head"><span>控制台输出</span><button id="clearBtn">清空</button></div>
-          <div id="console" class="console"></div>
-        </div>
-      </section>
-    </main>
+        <div class="console-head"><span>┤ OUTPUT ├</span><button id="clearBtn">clear</button></div>
+        <div id="console" class="console"></div>
+      </div>
+      <div class="pane-foot"><kbd>e</kbd> 编辑代码 <kbd>Ctrl+S</kbd> 应用 <kbd>c</kbd> 复制</div>
+    </section>
 
-    <footer id="status" class="status"></footer>
-    <div id="toast" class="toast" hidden></div>
+  </main>
+
+  <!-- 编辑代码操作条 -->
+  <div class="edit-bar" id="editActions" hidden>
+    <span class="fg-amber">● EDIT MODE</span>
+    <span class="fg-dim">修改后按</span> <kbd>Ctrl+S</kbd> <span class="fg-dim">应用，</span> <kbd>Esc</kbd> <span class="fg-dim">取消</span>
+    <button id="applyEdit" class="term-btn">[ 应用 ]</button>
+    <button id="cancelEdit" class="term-btn">[ 取消 ]</button>
   </div>
 
-  <script src="js/blocks.js"></script>
-  <script src="js/generators.js"></script>
-  <script src="js/engine.js"></script>
-  <script src="js/parser.js"></script>
-  <script src="js/app.js"></script>
+  <!-- 底部状态栏 -->
+  <footer class="statusbar">
+    <span id="status" class="status-msg">READY</span>
+    <span class="status-right">
+      <span id="statusLang">SWIFT</span> │
+      <span id="statusBlocks">0 BLOCKS</span> │
+      <span id="statusLines">0 LINES</span> │
+      <span>UTF-8</span> │
+      <span class="fg-green">● NORMAL</span>
+    </span>
+  </footer>
+
+  <!-- 帮助 / 示例 / 提示 浮层 -->
+  <div class="overlay" id="overlay" hidden>
+    <div class="overlay-box" id="overlayBox"></div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+</div>
+</div>
+
+<script src="js/blocks.js"></script>
+<script src="js/generators.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/parser.js"></script>
+<script src="js/app.js"></script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-/* app.js —— 交互主控：渲染 / 拖拽 / 双向同步 / 撤销重做 / 体验增强 */
+/* app.js —— TERMINAL EDITION：渲染 / 拖拽 / 双向同步 / 键盘驱动 */
 (function () {
   'use strict';
 
@@ -11,7 +11,7 @@
   const LANGS = [
     { id: 'c', label: 'C', ext: '.c' },
     { id: 'cpp', label: 'C++', ext: '.cpp' },
-    { id: 'swift', label: 'Swift', ext: '.swift' }
+    { id: 'swift', label: 'SWIFT', ext: '.swift' }
   ];
   const KEYWORDS = new Set([
     'int','float','double','bool','char','const','void','return','if','else','for','while',
@@ -23,13 +23,18 @@
   const state = {
     program: null, lang: 'swift', code: '', lineMap: {},
     selected: null, category: 'flow', search: '', editing: false,
-    undoStack: [], redoStack: []
+    undoStack: [], redoStack: [],
+    // 键盘导航
+    focusPane: 'canvas', kbCursor: null, kbPalette: 0, kbExample: 0,
+    overlay: null
   };
 
   const $ = s => document.querySelector(s);
   const workspaceEl = $('#workspace'), paletteEl = $('#palette'), catEl = $('#categories');
   const codeEl = $('#code'), codeEditor = $('#codeEditor'), consoleEl = $('#console');
   const statusEl = $('#status'), langEl = $('#langSwitch'), toastEl = $('#toast');
+  const overlayEl = $('#overlay'), overlayBox = $('#overlayBox');
+  const panes = { palette: $('#panePalette'), canvas: $('#paneCanvas'), code: $('#paneCode') };
 
   // ---------- 树工具 ----------
   function locate(root, id) {
@@ -70,31 +75,40 @@
   }
   const clone = o => JSON.parse(JSON.stringify(o));
 
+  // 收集所有可见积木（文档顺序），供键盘导航
+  function visibleBlocks() {
+    const out = [];
+    (function walk(b) {
+      if (!b) return;
+      out.push(b);
+      for (const k in b.inputs) { const v = b.inputs[k]; if (v && v.kind === 'block') walk(v.block); }
+      for (const k in b.statements) (b.statements[k] || []).forEach(walk);
+      if (b.next) walk(b.next);
+    })(state.program);
+    return out;
+  }
+  function paletteItems() { return [...paletteEl.querySelectorAll('.palette-item')]; }
+
   // ---------- 撤销 / 重做 ----------
   function snapshot() { return { program: clone(state.program), selected: state.selected }; }
   function pushUndo() {
     state.undoStack.push(snapshot());
     if (state.undoStack.length > 60) state.undoStack.shift();
     state.redoStack = [];
-    updateUndoButtons();
   }
   function undo() {
-    if (!state.undoStack.length) return;
+    if (!state.undoStack.length) { toast('Nothing to undo'); return; }
     state.redoStack.push(snapshot());
     const s = state.undoStack.pop();
-    state.program = s.program; state.selected = s.selected;
-    renderWorkspace(); updateCode(); updateUndoButtons(); toast('已撤销');
+    state.program = s.program; state.selected = s.selected; state.kbCursor = s.selected;
+    renderWorkspace(); updateCode(); echo('undo: 已撤销上一步');
   }
   function redo() {
-    if (!state.redoStack.length) return;
+    if (!state.redoStack.length) { toast('Nothing to redo'); return; }
     state.undoStack.push(snapshot());
     const s = state.redoStack.pop();
-    state.program = s.program; state.selected = s.selected;
-    renderWorkspace(); updateCode(); updateUndoButtons(); toast('已重做');
-  }
-  function updateUndoButtons() {
-    $('#undoBtn').disabled = !state.undoStack.length;
-    $('#redoBtn').disabled = !state.redoStack.length;
+    state.program = s.program; state.selected = s.selected; state.kbCursor = s.selected;
+    renderWorkspace(); updateCode(); echo('redo: 已重做');
   }
 
   // ---------- 渲染 ----------
@@ -116,7 +130,6 @@
     }
     el.dataset.owner = block.id; el.dataset.field = key; wrap.appendChild(el); return wrap;
   }
-
   function renderSingle(b) {
     const def = DEFS[b.type]; const el = document.createElement('div');
     el.className = 'blk shape-' + def.shape + (b.type === 'program' ? ' root' : '');
@@ -131,12 +144,12 @@
       const inp = document.createElement('span'); inp.className = 'input-slot'; inp.dataset.owner = b.id; inp.dataset.slot = k;
       const v = b.inputs[k];
       if (v && v.kind === 'block') inp.appendChild(renderSingle(v.block));
-      else { const ph = document.createElement('span'); ph.className = 'placeholder'; ph.textContent = lab || '值'; inp.appendChild(ph); }
+      else { const ph = document.createElement('span'); ph.className = 'placeholder'; ph.textContent = lab || 'value'; inp.appendChild(ph); }
       slot.appendChild(inp); head.appendChild(slot);
     }
     if (def.shape !== 'value' && b.type !== 'program') {
       const del = document.createElement('button'); del.className = 'del'; del.textContent = '×';
-      del.title = '删除积木'; del.dataset.delete = b.id; head.appendChild(del);
+      del.title = 'delete'; del.dataset.delete = b.id; head.appendChild(del);
     }
     el.appendChild(head);
     for (const k in (def.statements || {})) {
@@ -146,7 +159,7 @@
       slot.appendChild(lab);
       (b.statements[k] || []).forEach(ch => slot.appendChild(renderStack(ch)));
       const add = document.createElement('div'); add.className = 'slot-add';
-      add.dataset.owner = b.id; add.dataset.slot = k; add.textContent = '＋ 拖入积木'; slot.appendChild(add);
+      add.dataset.owner = b.id; add.dataset.slot = k; add.textContent = 'add block'; slot.appendChild(add);
       el.appendChild(slot);
     }
     return el;
@@ -159,22 +172,22 @@
     return wrap;
   }
   function renderWorkspace() {
-    workspaceEl.innerHTML = ''; workspaceEl.appendChild(renderSingle(state.program)); renderPalette();
+    workspaceEl.innerHTML = ''; workspaceEl.appendChild(renderSingle(state.program));
+    let n = 0; eachBlock(state.program, () => n++);
+    $('#canvasCount').textContent = n + ' blocks';
+    renderPalette(); applyCursor();
   }
-
   function renderCategories() {
     catEl.innerHTML = '';
     for (const key in CATEGORIES) {
       const btn = document.createElement('button');
       btn.className = 'cat' + (state.category === key ? ' active' : '');
-      btn.dataset.cat = key; btn.style.setProperty('--c', CATEGORIES[key].color);
-      btn.textContent = CATEGORIES[key].label; catEl.appendChild(btn);
+      btn.dataset.cat = key; btn.textContent = CATEGORIES[key].label; catEl.appendChild(btn);
     }
   }
   function renderPalette() {
     paletteEl.innerHTML = '';
-    const q = state.search.trim().toLowerCase();
-    let count = 0;
+    const q = state.search.trim().toLowerCase(); let count = 0;
     Object.keys(DEFS).forEach(type => {
       const d = DEFS[type]; if (d.fixed) return;
       if (state.category && d.category !== state.category) return;
@@ -186,10 +199,12 @@
       const name = document.createElement('span'); name.textContent = d.label;
       item.appendChild(dot); item.appendChild(name); paletteEl.appendChild(item);
     });
-    if (!count) { const e = document.createElement('div'); e.className = 'palette-empty'; e.textContent = '没有匹配的积木'; paletteEl.appendChild(e); }
+    if (!count) { const e = document.createElement('div'); e.className = 'palette-empty'; e.textContent = '-- no matches --'; paletteEl.appendChild(e); }
+    $('#paletteCount').textContent = count;
+    applyPaletteFocus();
   }
 
-  // ---------- 代码生成 / 高亮 ----------
+  // ---------- 代码生成 ----------
   function highlight(line) {
     const re = /("(?:[^"\\]|\\.)*")|(\/\/.*$)|\b(\d+(?:\.\d+)?)\b|\b([A-Za-z_]\w*)\b/g;
     let out = '', last = 0, m;
@@ -211,16 +226,16 @@
       row.innerHTML = '<span class="ln">' + (i + 1) + '</span><span class="src">' + highlight(ln) + '</span>';
       codeEl.appendChild(row);
     });
+    $('#statusLines').textContent = lines.length + ' LINES';
   }
   function updateCode() {
     if (state.editing) return;
     const res = generate(state.lang, state.program);
     state.code = res.code; state.lineMap = res.lineMap;
-    $('#codeLang').textContent = LANGS.find(l => l.id === state.lang).label;
-    renderCode(); applyHighlight();
+    $('#statusLang').textContent = LANGS.find(l => l.id === state.lang).label;
     let n = 0; eachBlock(state.program, () => n++);
-    statusEl.textContent = `${n} 块积木 · ${state.code.split('\n').length} 行代码`;
-    save();
+    $('#statusBlocks').textContent = n + ' BLOCKS';
+    renderCode(); applyHighlight(); save();
   }
 
   // ---------- 高亮联动 ----------
@@ -239,13 +254,42 @@
     if (blk) blk.classList.add('selected');
   }
   function selectBlock(id, scroll) {
-    state.selected = id; clearHighlights(); applyHighlight();
+    state.selected = id; state.kbCursor = id; clearHighlights(); applyHighlight(); applyCursor();
     if (scroll && id) { const blk = workspaceEl.querySelector('.blk[data-id="' + id + '"]'); if (blk) blk.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
   }
   function blockForLine(line) {
     let best = null, bestSpan = Infinity;
     for (const id in state.lineMap) { const [s, e] = state.lineMap[id]; if (line >= s && line <= e) { const span = e - s; if (span < bestSpan) { bestSpan = span; best = id; } } }
     return best;
+  }
+
+  // ---------- 键盘游标渲染 ----------
+  function applyCursor() {
+    workspaceEl.querySelectorAll('.blk.kb-cursor').forEach(e => e.classList.remove('kb-cursor'));
+    if (state.focusPane === 'canvas' && state.kbCursor) {
+      const el = workspaceEl.querySelector('.blk[data-id="' + state.kbCursor + '"]');
+      if (el) el.classList.add('kb-cursor');
+    }
+  }
+  function applyPaletteFocus() {
+    paletteEl.querySelectorAll('.palette-item').forEach(e => e.classList.remove('kb-focus'));
+    if (state.focusPane === 'palette') {
+      const items = paletteItems();
+      if (items.length) {
+        state.kbPalette = Math.max(0, Math.min(state.kbPalette, items.length - 1));
+        items[state.kbPalette].classList.add('kb-focus');
+        items[state.kbPalette].scrollIntoView({ block: 'nearest' });
+      }
+    }
+  }
+  function setFocus(pane) {
+    state.focusPane = pane;
+    Object.keys(panes).forEach(k => panes[k].classList.toggle('active', k === pane));
+    if (pane === 'canvas') { if (!state.kbCursor) state.kbCursor = visibleBlocks()[0] && visibleBlocks()[0].id; applyCursor(); }
+    else { workspaceEl.querySelectorAll('.blk.kb-cursor').forEach(e => e.classList.remove('kb-cursor')); }
+    if (pane === 'palette') applyPaletteFocus();
+    const names = { palette: 'BLOCKS', canvas: 'CANVAS', code: 'SOURCE' };
+    echo('focus: ' + names[pane]);
   }
 
   // ---------- 拖拽 ----------
@@ -302,22 +346,76 @@
       else if (target.kind === 'input' && shape === 'value') placed = setInput(state.program, target.owner, target.slot, d.block);
     }
     if (!placed && shape !== 'value') appendStmt(state.program, state.program.id, 'body', d.block);
-    if (d.moved) { pushUndo(); suppressClickUntil = Date.now() + 120; }
-    else if (d.fromPalette) pushUndo();
-    state.selected = d.block.id; renderWorkspace(); updateCode(); applyHighlight();
+    if (d.moved || d.fromPalette) pushUndo();
+    state.selected = d.block.id; state.kbCursor = d.block.id;
+    renderWorkspace(); updateCode(); applyHighlight();
+    echo('added: ' + DEFS[d.block.type].label);
   }
 
-  // ---------- 编辑代码 ↔ 积木 ----------
+  // ---------- 键盘操作：添加 / 删除 / 编辑字段 ----------
+  function addSelectedPaletteBlock() {
+    const items = paletteItems(); if (!items.length) return;
+    const type = items[state.kbPalette].dataset.palette;
+    const block = createBlock(type), shape = DEFS[type].shape;
+    pushUndo();
+    // 添加到当前光标积木之后（同一容器），否则加到主程序
+    let placed = false;
+    if (state.kbCursor && shape !== 'value') {
+      const loc = locate(state.program, state.kbCursor);
+      if (loc && loc.parent && loc.key === 'next') { block.next = loc.block.next; loc.block.next = block; placed = true; }
+    }
+    if (!placed && shape !== 'value') appendStmt(state.program, state.program.id, 'body', block);
+    if (shape === 'value' && state.kbCursor) {
+      const loc = locate(state.program, state.kbCursor);
+      if (loc && loc.block.inputs) { const slot = Object.keys(loc.block.inputs)[0]; if (slot) { setInput(state.program, loc.block.id, slot, block); placed = true; } }
+    }
+    state.kbCursor = block.id; state.selected = block.id;
+    renderWorkspace(); updateCode(); applyHighlight(); echo('added: ' + DEFS[type].label);
+  }
+  function deleteCursorBlock() {
+    if (!state.kbCursor) return;
+    const loc = locate(state.program, state.kbCursor);
+    if (!loc || !loc.parent) { toast('cannot delete root'); return; }
+    const all = visibleBlocks(), idx = all.findIndex(b => b.id === state.kbCursor);
+    const nextCursor = all[idx + 1] ? all[idx + 1].id : (all[idx - 1] ? all[idx - 1].id : null);
+    pushUndo(); detach(state.program, state.kbCursor);
+    state.kbCursor = nextCursor; state.selected = nextCursor;
+    renderWorkspace(); updateCode(); applyHighlight(); echo('deleted block');
+  }
+  function editCursorField(dir) {
+    if (!state.kbCursor) return;
+    const el = workspaceEl.querySelector('.blk[data-id="' + state.kbCursor + '"]');
+    if (!el) return;
+    const controls = [...el.querySelectorAll('input,select')];
+    if (!controls.length) { echo('no editable field'); return; }
+    controls[0].focus();
+    if (controls[0].tagName === 'SELECT') {
+      const i = controls[0].selectedIndex;
+      controls[0].selectedIndex = Math.max(0, Math.min(controls[0].options.length - 1, i + dir));
+      controls[0].dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    echo('editing field');
+  }
+  function moveCursor(dir) {
+    const all = visibleBlocks(); if (!all.length) return;
+    let idx = all.findIndex(b => b.id === state.kbCursor);
+    if (idx < 0) idx = 0; else idx = Math.max(0, Math.min(all.length - 1, idx + dir));
+    state.kbCursor = all[idx].id; state.selected = all[idx].id;
+    clearHighlights(); applyHighlight(); applyCursor();
+    const el = workspaceEl.querySelector('.blk[data-id="' + state.kbCursor + '"]');
+    if (el) el.scrollIntoView({ block: 'nearest' });
+    echo('cursor: ' + DEFS[all[idx].type].label);
+  }
+
+  // ---------- 编辑代码 ----------
   function enterEdit() {
     if (state.editing) return;
-    state.editing = true;
-    codeEl.hidden = true; codeEditor.hidden = false;
-    $('#editHint').hidden = false; $('#editActions').hidden = false;
-    $('#editToggle').textContent = '✎ 编辑中'; $('#editToggle').classList.add('active');
+    setFocus('code'); state.editing = true;
+    codeEl.hidden = true; codeEditor.hidden = false; $('#editActions').hidden = false;
     codeEditor.value = state.code;
     codeEditor.style.height = Math.max(200, codeEl.scrollHeight) + 'px';
     codeEditor.focus();
-    statusEl.textContent = '编辑模式：修改代码后点击「应用」';
+    echo('EDIT MODE — Ctrl+S apply, Esc cancel');
   }
   function exitEdit(apply) {
     if (!state.editing) return;
@@ -325,68 +423,166 @@
       const code = codeEditor.value;
       try {
         const { program } = parse(code, state.lang);
-        if (!program.statements.body.length) throw new Error('解析结果为空');
-        pushUndo();
-        state.program = program; state.selected = null;
+        if (!program.statements.body.length) throw new Error('empty result');
+        pushUndo(); state.program = program; state.selected = null; state.kbCursor = null;
         state.editing = false;
-        codeEditor.hidden = true; codeEl.hidden = false;
-        $('#editHint').hidden = true; $('#editActions').hidden = true;
-        $('#editToggle').textContent = '✎ 编辑'; $('#editToggle').classList.remove('active');
-        renderWorkspace(); updateCode(); toast('✓ 代码已同步回积木');
+        codeEditor.hidden = true; codeEl.hidden = false; $('#editActions').hidden = true;
+        renderWorkspace(); updateCode(); toast('code synced to blocks'); echo('synced code -> blocks');
         return;
       } catch (err) {
-        toast('✗ 解析失败：' + err.message, true);
-        statusEl.textContent = '解析失败：' + err.message + '（保留编辑内容，可继续修改）';
-        return;
+        toast('parse error: ' + err.message, true); echo('ERR: ' + err.message); return;
       }
     }
     state.editing = false;
-    codeEditor.hidden = true; codeEl.hidden = false;
-    $('#editHint').hidden = true; $('#editActions').hidden = true;
-    $('#editToggle').textContent = '✎ 编辑'; $('#editToggle').classList.remove('active');
-    updateCode();
+    codeEditor.hidden = true; codeEl.hidden = false; $('#editActions').hidden = true;
+    updateCode(); echo('edit cancelled');
   }
 
-  // ---------- 运行 / 控制台 ----------
+  // ---------- 运行 ----------
   function runProgram() {
-    if (state.editing) { toast('请先应用或取消代码编辑', true); return; }
+    if (state.editing) { toast('apply or cancel edit first', true); return; }
     consoleEl.innerHTML = '';
     const res = run(state.program, line => {
       const d = document.createElement('div'); d.className = 'console-line'; d.textContent = line; consoleEl.appendChild(d);
     });
-    if (!res.output.length) { const d = document.createElement('div'); d.className = 'console-line muted'; d.textContent = '（程序无输出）'; consoleEl.appendChild(d); }
+    if (!res.output.length) { const d = document.createElement('div'); d.className = 'console-line muted'; d.textContent = '(no output)'; consoleEl.appendChild(d); }
     consoleEl.scrollTop = consoleEl.scrollHeight;
-    statusEl.textContent = `${res.output.length} 行输出 · ${res.ms}ms · 运行完成`;
+    echo('run: ' + res.output.length + ' lines, ' + res.ms + 'ms — $? = 0');
   }
 
-  // ---------- 导入导出 ----------
+  // ---------- 导入导出 / 复制 ----------
   function exportCode() {
     const ext = LANGS.find(l => l.id === state.lang).ext;
     const blob = new Blob([state.code], { type: 'text/plain;charset=utf-8' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
     a.download = 'program' + ext; a.click(); URL.revokeObjectURL(a.href);
-    toast('已导出 program' + ext);
+    toast('exported program' + ext); echo('saved: program' + ext);
   }
   function importCode(file) {
     const reader = new FileReader();
     reader.onload = () => {
-      const code = String(reader.result);
       try {
-        const { program } = parse(code, state.lang);
-        if (!program.statements.body.length) throw new Error('未识别到有效语句');
-        pushUndo(); state.program = program; state.selected = null;
-        renderWorkspace(); updateCode(); toast('✓ 已导入并转换为积木');
-      } catch (err) { toast('✗ 导入失败：' + err.message, true); }
+        const { program } = parse(String(reader.result), state.lang);
+        if (!program.statements.body.length) throw new Error('no statements');
+        pushUndo(); state.program = program; state.selected = null; state.kbCursor = null;
+        renderWorkspace(); updateCode(); toast('imported'); echo('imported -> blocks');
+      } catch (err) { toast('import error: ' + err.message, true); }
     };
     reader.readAsText(file);
   }
+  async function copyCode() {
+    try { await navigator.clipboard.writeText(state.code); toast('copied'); echo('yanked to clipboard'); }
+    catch (e) { toast('copy failed', true); }
+  }
 
-  // ---------- Toast ----------
+  // ---------- 命令栏 / Toast ----------
+  function echo(msg) { $('#cmdEcho').innerHTML = esc(msg); }
   let toastTimer = null;
   function toast(msg, isError) {
     toastEl.textContent = msg; toastEl.hidden = false;
     toastEl.className = 'toast' + (isError ? ' error' : '');
-    clearTimeout(toastTimer); toastTimer = setTimeout(() => { toastEl.hidden = true; }, 2600);
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => { toastEl.hidden = true; }, 2400);
+  }
+
+  // ---------- 浮层（帮助 / 示例） ----------
+  function openOverlay(type) {
+    state.overlay = type; overlayEl.hidden = false; overlayBox.innerHTML = '';
+    if (type === 'help') {
+      overlayBox.innerHTML = '<h2>┤ KEYBINDINGS ├</h2>' +
+        [['Tab / Shift+Tab', '切换面板'], ['↑ / ↓', '导航积木 / 积木库'], ['Enter', '添加积木 / 编辑字段'],
+         ['Space', '从积木库添加选中积木'], ['Delete / Backspace', '删除积木'], ['e', '编辑代码'],
+         ['Ctrl+S', '应用代码 / 导出'], ['F5 / r', '运行'], ['u / Ctrl+Z', '撤销'], ['Ctrl+Shift+Z', '重做'],
+         ['F2', '切换示例'], ['1 / 2 / 3', '切换语言 C/C++/Swift'], ['c', '复制代码'], ['Esc', '关闭浮层 / 取消编辑']]
+        .map(([k, d]) => `<div class="overlay-row"><span class="keys">${k}</span><span class="desc">${d}</span></div>`).join('') +
+        '<div class="overlay-close">按 Esc 或任意方向键关闭</div>';
+    } else if (type === 'examples') {
+      overlayBox.innerHTML = '<h2>┤ EXAMPLES ├</h2>';
+      Object.keys(EXAMPLES).forEach((k, i) => {
+        const it = document.createElement('div'); it.className = 'overlay-item'; it.dataset.example = k;
+        it.textContent = (i + 1) + '. ' + EXAMPLES[k].name;
+        if (i === state.kbExample) it.classList.add('kb-focus');
+        overlayBox.appendChild(it);
+      });
+      overlayBox.insertAdjacentHTML('beforeend', '<div class="overlay-close">↑↓ 选择 · Enter 载入 · Esc 关闭</div>');
+    }
+    state.kbExample = state.kbExample || 0;
+  }
+  function closeOverlay() { state.overlay = null; overlayEl.hidden = true; }
+  function moveOverlay(dir) {
+    if (state.overlay !== 'examples') return;
+    const items = [...overlayBox.querySelectorAll('.overlay-item')]; if (!items.length) return;
+    state.kbExample = Math.max(0, Math.min(items.length - 1, state.kbExample + dir));
+    items.forEach((it, i) => it.classList.toggle('kb-focus', i === state.kbExample));
+    items[state.kbExample].scrollIntoView({ block: 'nearest' });
+  }
+  function chooseOverlay() {
+    if (state.overlay === 'examples') {
+      const key = Object.keys(EXAMPLES)[state.kbExample]; if (!key) return;
+      pushUndo(); state.program = EXAMPLES[key].build(); state.selected = null; state.kbCursor = null;
+      closeOverlay(); renderWorkspace(); updateCode(); toast('loaded: ' + EXAMPLES[key].name); echo('loaded example: ' + EXAMPLES[key].name);
+    }
+  }
+
+  // ---------- 键盘总控 ----------
+  function onKeydown(e) {
+    const k = e.key, mod = e.ctrlKey || e.metaKey;
+    // 浮层优先
+    if (state.overlay) {
+      if (k === 'Escape') { e.preventDefault(); closeOverlay(); }
+      else if (k === 'ArrowDown') { e.preventDefault(); moveOverlay(1); }
+      else if (k === 'ArrowUp') { e.preventDefault(); moveOverlay(-1); }
+      else if (k === 'Enter') { e.preventDefault(); chooseOverlay(); }
+      return;
+    }
+    // 编辑模式
+    if (state.editing) {
+      if (mod && k.toLowerCase() === 's') { e.preventDefault(); exitEdit(true); }
+      else if (k === 'Escape') { e.preventDefault(); exitEdit(false); }
+      return; // 其他键交给 textarea
+    }
+    // 输入框内：只处理 Escape
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') {
+      if (k === 'Escape') e.target.blur();
+      return;
+    }
+    // 全局功能键
+    if (k === 'F1') { e.preventDefault(); openOverlay('help'); return; }
+    if (k === 'F2') { e.preventDefault(); openOverlay('examples'); return; }
+    if (k === 'F5') { e.preventDefault(); runProgram(); return; }
+    if (mod && k.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+    if (mod && k.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
+    if (mod && k.toLowerCase() === 's') { e.preventDefault(); exportCode(); return; }
+    if (k === 'Tab') { e.preventDefault(); const order = ['palette','canvas','code']; const i = order.indexOf(state.focusPane); setFocus(order[(i + (e.shiftKey ? -1 : 1) + 3) % 3]); return; }
+
+    // 面板相关
+    if (state.focusPane === 'palette') {
+      const items = paletteItems();
+      if (k === 'ArrowDown') { e.preventDefault(); state.kbPalette = Math.min(items.length - 1, state.kbPalette + 1); applyPaletteFocus(); }
+      else if (k === 'ArrowUp') { e.preventDefault(); state.kbPalette = Math.max(0, state.kbPalette - 1); applyPaletteFocus(); }
+      else if (k === 'Enter' || k === ' ') { e.preventDefault(); addSelectedPaletteBlock(); }
+    } else if (state.focusPane === 'canvas') {
+      if (k === 'ArrowDown') { e.preventDefault(); moveCursor(1); }
+      else if (k === 'ArrowUp') { e.preventDefault(); moveCursor(-1); }
+      else if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); deleteCursorBlock(); }
+      else if (k === 'Enter') { e.preventDefault(); editCursorField(0); }
+      else if (k === ' ' || k === 'i') { e.preventDefault(); setFocus('palette'); }
+      else if (k === 'e') { e.preventDefault(); enterEdit(); }
+    } else if (state.focusPane === 'code') {
+      if (k === 'e') { e.preventDefault(); enterEdit(); }
+      else if (k === 'c' && !mod) { e.preventDefault(); copyCode(); }
+    }
+    // 全局单键快捷键
+    if (k === 'r') { e.preventDefault(); runProgram(); }
+    else if (k === 'u') { e.preventDefault(); undo(); }
+    else if (k === '1') { e.preventDefault(); setLang('c'); }
+    else if (k === '2') { e.preventDefault(); setLang('cpp'); }
+    else if (k === '3') { e.preventDefault(); setLang('swift'); }
+  }
+  function setLang(lang) {
+    if (state.editing) exitEdit(false);
+    state.lang = lang;
+    langEl.querySelectorAll('button').forEach(x => x.classList.toggle('active', x.dataset.lang === lang));
+    updateCode(); echo('language: ' + LANGS.find(l => l.id === lang).label);
   }
 
   // ---------- 持久化 ----------
@@ -416,54 +612,34 @@
       const del = e.target.closest('[data-delete]');
       if (del) { pushUndo(); const removed = detach(state.program, del.dataset.delete); if (removed && state.selected === removed.id) state.selected = null; renderWorkspace(); updateCode(); return; }
       const head = e.target.closest('.blk-head');
-      if (head && !e.target.closest('input,select,button,.input-slot')) { const blk = head.closest('.blk'); if (blk && !blk.classList.contains('root')) selectBlock(blk.dataset.id, false); }
+      if (head && !e.target.closest('input,select,button,.input-slot')) { const blk = head.closest('.blk'); if (blk && !blk.classList.contains('root')) { selectBlock(blk.dataset.id, false); setFocus('canvas'); } }
     });
-    catEl.addEventListener('click', e => { const b = e.target.closest('[data-cat]'); if (b) { state.category = b.dataset.cat; renderPalette(); } });
-    $('#blockSearch').addEventListener('input', e => { state.search = e.target.value; if (state.search) state.category = ''; else state.category = 'flow'; renderCategories(); renderPalette(); });
-    langEl.addEventListener('click', e => {
-      const b = e.target.closest('[data-lang]'); if (!b) return;
-      if (state.editing) exitEdit(false);
-      state.lang = b.dataset.lang;
-      langEl.querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
-      updateCode();
-    });
-    codeEl.addEventListener('click', e => { const row = e.target.closest('.code-line'); if (!row) return; const id = blockForLine(+row.dataset.line); selectBlock(id || null, !!id); });
-    $('#runBtn').addEventListener('click', runProgram);
+    catEl.addEventListener('click', e => { const b = e.target.closest('[data-cat]'); if (b) { state.category = b.dataset.cat; state.kbPalette = 0; renderPalette(); } });
+    $('#blockSearch').addEventListener('input', e => { state.search = e.target.value; state.category = state.search ? '' : 'flow'; state.kbPalette = 0; renderCategories(); renderPalette(); });
+    langEl.addEventListener('click', e => { const b = e.target.closest('[data-lang]'); if (b) setLang(b.dataset.lang); });
+    codeEl.addEventListener('click', e => { const row = e.target.closest('.code-line'); if (!row) return; const id = blockForLine(+row.dataset.line); selectBlock(id || null, !!id); setFocus('code'); });
     $('#clearBtn').addEventListener('click', () => { consoleEl.innerHTML = ''; });
-    $('#undoBtn').addEventListener('click', undo);
-    $('#redoBtn').addEventListener('click', redo);
-    $('#editToggle').addEventListener('click', () => state.editing ? exitEdit(true) : enterEdit());
     $('#applyEdit').addEventListener('click', () => exitEdit(true));
     $('#cancelEdit').addEventListener('click', () => exitEdit(false));
-    $('#copyBtn').addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText(state.code); toast('已复制代码'); } catch (e) { toast('复制失败，请手动复制', true); }
-    });
-    $('#exportBtn').addEventListener('click', exportCode);
-    $('#importBtn').addEventListener('click', () => $('#importFile').click());
-    $('#importFile').addEventListener('change', e => { if (e.target.files[0]) importCode(e.target.files[0]); e.target.value = ''; });
-    const exSel = $('#exampleSelect');
-    Object.keys(EXAMPLES).forEach(k => { const o = document.createElement('option'); o.value = k; o.textContent = EXAMPLES[k].name; exSel.appendChild(o); });
-    exSel.addEventListener('change', () => {
-      if (!confirm('切换示例会替换当前积木，确定吗？')) { exSel.value = exSel.dataset.prev || 'sum'; return; }
-      pushUndo(); state.program = EXAMPLES[exSel.value].build(); state.selected = null;
-      renderWorkspace(); updateCode(); exSel.dataset.prev = exSel.value; toast('已加载示例：' + EXAMPLES[exSel.value].name);
-    });
-    exSel.dataset.prev = 'sum';
-    // 键盘快捷键
-    document.addEventListener('keydown', e => {
-      const mod = e.ctrlKey || e.metaKey;
-      if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
-      else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
-      else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); exportCode(); }
-      else if (e.key === 'Escape' && state.editing) exitEdit(false);
-    });
+    menuItems();
+    Object.keys(panes).forEach(k => panes[k].addEventListener('pointerdown', () => setFocus(k)));
+    overlayEl.addEventListener('click', e => { if (e.target === overlayEl) closeOverlay(); const it = e.target.closest('[data-example]'); if (it) { state.kbExample = Object.keys(EXAMPLES).indexOf(it.dataset.example); chooseOverlay(); } });
+    document.addEventListener('keydown', onKeydown);
+  }
+  function menuItems() {
+    document.querySelectorAll('.menu-item').forEach(m => m.addEventListener('click', () => {
+      if (m.textContent.includes('帮助')) openOverlay('help');
+      else if (m.textContent.includes('示例')) openOverlay('examples');
+      else if (m.textContent.includes('运行')) runProgram();
+    }));
   }
 
   // ---------- 初始化 ----------
   function init() {
     if (!load()) state.program = defaultProgram();
     langEl.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.lang === state.lang));
-    renderCategories(); renderWorkspace(); updateCode(); bindEvents(); updateUndoButtons();
+    renderCategories(); renderWorkspace(); updateCode(); bindEvents(); setFocus('canvas');
+    echo('ready — ' + Object.keys(EXAMPLES).length + ' examples loaded. F1 for help.');
   }
   init();
 })();
